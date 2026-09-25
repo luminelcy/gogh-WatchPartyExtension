@@ -34,6 +34,13 @@ internal static class UrlInputUnlock
     private static bool _unlockedPrev;
     private static string _pendingRealUrl;
 
+    /// <summary>
+    /// 走私 URL 的"通行证"集合。LoadUrlAsync 在 async 链的后续才做 IsValidYoutubeVideoUrl
+    /// 校验（WebViewController.LoadUrlAsync，VA 0x180E40480），此时输入框守卫早已关闭，
+    /// 所以放行过的 URL 要在这里留名，异步校验才认。
+    /// </summary>
+    private static readonly HashSet<string> _blessedUrls = new();
+
     public static void Apply()
     {
         // 注意：游戏程序集里有同名 Harmony 命名空间会遮蔽 HarmonyLib.Harmony 类型，必须全限定
@@ -86,6 +93,7 @@ internal static class UrlInputUnlock
         if (!_unlocked || IsYoutubeUrl(inputUrl)) return true;
         if (!TryNormalizeHttpUrl(inputUrl, out var url)) return true; // 连 URL 都不是，交给原逻辑报错
         _pendingRealUrl = url;
+        _blessedUrls.Add(url);
         inputUrl = FakeYoutubeUrl;
         return true;
     }
@@ -106,11 +114,17 @@ internal static class UrlInputUnlock
         return false;
     }
 
-    /// <summary>IsValidYoutubeVideoUrl(string inputUrl, out string errorMessage)</summary>
+    /// <summary>
+    /// IsValidYoutubeVideoUrl(string inputUrl, out string errorMessage)。
+    /// 两道调用点：输入框提交（守卫内同步）和 WebViewController.LoadUrlAsync（异步、守卫外），
+    /// 后者靠 _blessedUrls 通行证放行。
+    /// </summary>
     public static bool IsValidPrefix(string inputUrl, out string errorMessage, ref bool __result)
     {
         errorMessage = null;
-        if (!_unlocked || IsYoutubeUrl(inputUrl)) return true;
+        if (IsYoutubeUrl(inputUrl)) return true;
+        bool allowed = _unlocked || (inputUrl != null && _blessedUrls.Contains(inputUrl));
+        if (!allowed) return true;
         if (!TryNormalizeHttpUrl(inputUrl, out _)) return true;
         __result = true;
         return false;
