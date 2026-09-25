@@ -35,8 +35,8 @@ internal static class WebViewUaFix
     private static int _uaSetCount;
     private static float _uaSetWindowEnd;
     private static bool _loggedFound;
-    private static bool _shimInstalled;
     private static WebViewControllerType _controller;
+    private static Il2CppVuplex.WebView.IWebView _shimmedWebView;
 
     public static void Tick()
     {
@@ -54,21 +54,25 @@ internal static class WebViewUaFix
             }
 
             var webView = GetWebView();
-            if (webView == null || _shimInstalled) return;
+            if (webView == null) return;
+            // 按 webview 实例跟踪安装状态——场景重开 = 新实例，必须重装
+            if (_shimmedWebView != null
+                && !_shimmedWebView.WasCollected
+                && webView.Pointer == _shimmedWebView.Pointer) return;
 
-            // 1) 前置 shim + 诊断面板都注册为 PageLoadScripts（每次页面加载都跑，面板不怕 reload）
+            // 1) 前置 shim + 诊断面板都注册为 PageLoadScripts（每次页面加载都跑）
             var scripts = webView.PageLoadScripts;
             if (scripts != null)
             {
                 scripts.Add(ShimJs);
                 scripts.Add(OverlayJs);
-                MelonLogger.Msg("WebViewUaFix: page-load shim registered");
+                MelonLogger.Msg("WebViewUaFix: page-load scripts registered");
             }
             // 2) 当前页立即补一针面板（reload 后由 PageLoadScripts 接管）
             webView.ExecuteJavaScript(OverlayJs, null);
             // 3) 让当前页面带 shim 重新初始化一次
             webView.Reload();
-            _shimInstalled = true;
+            _shimmedWebView = webView;
             MelonLogger.Msg("WebViewUaFix: shim installed, page reloaded");
         }
         catch (Exception e)
@@ -102,8 +106,10 @@ internal static class WebViewUaFix
         return p == null ? null : p.WebView;
     }
 
-    // 前置 shim：UA 覆写 + avc1/mp4a 检测放行（真实解码交给内核）。
-    // 原函数存到 window.__wpeReal 供诊断面板报告【真实】矩阵（shim 会谎报，别信谎报值）。
+    // 前置 shim：UA 覆写 + 检测放行。注意放行策略是**精确**的：
+    // 只放行 avc1 与 mp4a.40.2（AAC-LC），对 mp4a.40.5(HE-AAC)/ec-3/flac 等主动返回不支持——
+    // 引导 B 站播放器选 AAC-LC 音轨（曾因一律放行导致播放器选了内核解不了的高音质轨而无声）。
+    // 原函数存 window.__wpeReal 供面板报告【真实】矩阵。
     private const string ShimJs = """
 (function () {
   try {
@@ -111,19 +117,24 @@ internal static class WebViewUaFix
     try { Object.defineProperty(navigator, 'userAgent', { get: function () { return UA; } }); } catch (e) {}
     try { Object.defineProperty(navigator, 'appVersion', { get: function () { return UA.replace('Mozilla/', ''); } }); } catch (e) {}
     var real = {};
+    var lie = function (t) {
+      if (!t) return false;
+      if (/mp4a\.40\.5|mp4a\.40\.29|ec-3|flac|alac|opus|vorbis/i.test(t)) return false;
+      return /avc1|h264/i.test(t) || /mp4a\.40\.2/i.test(t);
+    };
     try {
       real.cpt = HTMLMediaElement.prototype.canPlayType;
       HTMLMediaElement.prototype.canPlayType = function (t) {
-        var r = real.cpt.call(this, t);
-        if (!r && t && /avc1|mp4a|h264|aac/i.test(t)) return 'probably';
-        return r;
+        if (lie(t)) return 'probably';
+        return real.cpt.call(this, t);
       };
     } catch (e) {}
     try {
       if (window.MediaSource) {
         real.sup = MediaSource.isTypeSupported.bind(MediaSource);
         MediaSource.isTypeSupported = function (t) {
-          if (t && /avc1|mp4a|h264|aac/i.test(t)) return true;
+          if (/mp4a\.40\.5|mp4a\.40\.29|ec-3|flac|alac/i.test(t)) return false;
+          if (lie(t)) return true;
           return real.sup(t);
         };
       }
@@ -136,38 +147,47 @@ internal static class WebViewUaFix
 })();
 """;
 
-    // 诊断面板：shim 状态 / UA / 【真实】矩阵（经 __wpeReal），直接画在页面上（截图可见）
+    // 诊断面板：shim 状态 / UA / 【真实】矩阵。PageLoadScripts 在 document 开头执行、body 还不存在，
+    // 所以要等 body 就绪再挂（之前面板消失就是这个原因）。
     private const string OverlayJs = """
 (function () {
-  try {
-    var old = document.getElementById('wpe-report');
-    if (old) old.remove();
-    var d = document.createElement('div');
-    d.id = 'wpe-report';
-    d.style.cssText = 'position:fixed;top:8px;left:8px;z-index:2147483647;background:rgba(0,0,0,.82);color:#3f6;font:12px/1.5 monospace;padding:8px 12px;border-radius:6px;max-width:70%;white-space:pre-wrap;';
-    (document.body || document.documentElement).appendChild(d);
-    var upd = function () {
-      try {
-        var real = window.__wpeReal || {};
-        var rs = function (c) {
-          try { return real.sup ? (real.sup(c) ? 1 : 0) : '?'; } catch (e) { return -1; }
-        };
-        var v = document.createElement('video');
-        d.textContent = '[WPE] shim=' + (window.__wpeShim || 'none')
-          + ' | ua=' + (navigator.userAgent.indexOf('Chrome/') >= 0 ? 'CHROME-OK' : 'BAD')
-          + '\nREAL: avc1=' + rs('video/mp4; codecs="avc1.42E01E"')
-          + ' mp4a=' + rs('audio/mp4; codecs="mp4a.40.2"')
-          + ' av01=' + rs('video/mp4; codecs="av01.0.08M.08"')
-          + ' canplay_h264aac=' + (real.cpt ? (real.cpt.call(v, 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"') || 'no') : '?')
-          + '\n' + new Date().toLocaleTimeString();
-      } catch (e) {
-        d.textContent = '[WPE] panel err:' + e;
+  var start = function (attempt) {
+    try {
+      if (!document.body) {
+        if (attempt < 50) { setTimeout(function () { start(attempt + 1); }, 200); }
+        return;
       }
-    };
-    upd();
-    setInterval(upd, 2000);
-    window.__wpePanel = 1;
-  } catch (e) {}
+      var old = document.getElementById('wpe-report');
+      if (old) old.remove();
+      var d = document.createElement('div');
+      d.id = 'wpe-report';
+      d.style.cssText = 'position:fixed;top:8px;left:8px;z-index:2147483647;background:rgba(0,0,0,.82);color:#3f6;font:12px/1.5 monospace;padding:8px 12px;border-radius:6px;max-width:70%;white-space:pre-wrap;';
+      document.body.appendChild(d);
+      var upd = function () {
+        try {
+          var real = window.__wpeReal || {};
+          var rs = function (c) {
+            try { return real.sup ? (real.sup(c) ? 1 : 0) : '?'; } catch (e) { return -1; }
+          };
+          var v = document.createElement('video');
+          d.textContent = '[WPE] shim=' + (window.__wpeShim || 'none')
+            + ' | ua=' + (navigator.userAgent.indexOf('Chrome/') >= 0 ? 'CHROME-OK' : 'BAD')
+            + '\nREAL: avc1=' + rs('video/mp4; codecs="avc1.42E01E"')
+            + ' mp4a.40.2=' + rs('audio/mp4; codecs="mp4a.40.2"')
+            + ' mp4a.40.5=' + rs('audio/mp4; codecs="mp4a.40.5"')
+            + ' av01=' + rs('video/mp4; codecs="av01.0.08M.08"')
+            + ' canplay_h264aac=' + (real.cpt ? (real.cpt.call(v, 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"') || 'no') : '?')
+            + '\n' + new Date().toLocaleTimeString();
+        } catch (e) {
+          d.textContent = '[WPE] panel err:' + e;
+        }
+      };
+      upd();
+      setInterval(upd, 2000);
+      window.__wpePanel = 1;
+    } catch (e) {}
+  };
+  start(0);
 })();
 """;
 }
