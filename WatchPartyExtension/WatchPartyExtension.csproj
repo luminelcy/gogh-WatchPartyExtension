@@ -1,0 +1,84 @@
+<Project Sdk="Microsoft.NET.Sdk">
+	<PropertyGroup>
+		<TargetFramework>net6.0</TargetFramework>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<Nullable>disable</Nullable>
+		<RootNamespace>WatchPartyExtension</RootNamespace>
+		<LangVersion>latest</LangVersion>
+		<IsPackable>false</IsPackable>
+		<AssemblyVersion>0.1.0.0</AssemblyVersion>
+		<FileVersion>0.1.0.0</FileVersion>
+		<NeutralLanguage>en-US</NeutralLanguage>
+		<AssemblyName>WatchPartyExtension</AssemblyName>
+		<Platforms>AnyCPU;x64</Platforms>
+	</PropertyGroup>
+
+	<PropertyGroup>
+		<EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<Compile Include="Core.cs" />
+		<Compile Include="UrlInputUnlock.cs" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<Reference Include="MelonLoader">
+			<HintPath>..\..\gogh Focus with Your Avatar\MelonLoader\net6\MelonLoader.dll</HintPath>
+			<Private>false</Private>
+		</Reference>
+		<Reference Include="Il2CppInterop.Runtime">
+			<HintPath>..\..\gogh Focus with Your Avatar\MelonLoader\net6\Il2CppInterop.Runtime.dll</HintPath>
+			<Private>false</Private>
+		</Reference>
+		<Reference Include="Il2CppInterop.Common">
+			<HintPath>..\..\gogh Focus with Your Avatar\MelonLoader\net6\Il2CppInterop.Common.dll</HintPath>
+			<Private>false</Private>
+		</Reference>
+		<Reference Include="0Harmony">
+			<HintPath>..\..\gogh Focus with Your Avatar\MelonLoader\net6\0Harmony.dll</HintPath>
+			<Private>false</Private>
+		</Reference>
+		<Reference Include="Il2Cppmscorlib">
+			<HintPath>..\..\gogh Focus with Your Avatar\MelonLoader\Il2CppAssemblies\Il2Cppmscorlib.dll</HintPath>
+			<Private>false</Private>
+		</Reference>
+	</ItemGroup>
+
+	<!-- 游戏类型分散在 Domain/Presenter/View/Installer/Sequence/Behaviour + Assembly-CSharp。
+	     Il2CppInterop 给 Project.* 命名空间加 Il2Cpp 前缀（Il2CppProject.*）。 -->
+	<ItemGroup>
+		<Reference Include="Assembly-CSharp">
+			<HintPath>..\..\gogh Focus with Your Avatar\MelonLoader\Il2CppAssemblies\Assembly-CSharp.dll</HintPath>
+			<Private>false</Private>
+		</Reference>
+		<Reference Include="Il2CppDomainAssemblyDefinition">
+			<HintPath>..\..\gogh Focus with Your Avatar\MelonLoader\Il2CppAssemblies\Il2CppDomainAssemblyDefinition.dll</HintPath>
+			<Private>false</Private>
+		</Reference>
+		<Reference Include="Il2CppPresenterAssemblyDefinition">
+			<HintPath>..\..\gogh Focus with Your Avatar\MelonLoader\Il2CppAssemblies\Il2CppPresenterAssemblyDefinition.dll</HintPath>
+			<Private>false</Private>
+		</Reference>
+		<Reference Include="Il2CppViewAssemblyDefinition">
+			<HintPath>..\..\gogh Focus with Your Avatar\MelonLoader\Il2CppAssemblies\Il2CppViewAssemblyDefinition.dll</HintPath>
+			<Private>false</Private>
+		</Reference>
+		<Reference Include="Il2CppInstallerAssemblyDefinition">
+			<HintPath>..\..\gogh Focus with Your Avatar\MelonLoader\Il2CppAssemblies\Il2CppInstallerAssemblyDefinition.dll</HintPath>
+			<Private>false</Private>
+		</Reference>
+		<Reference Include="Il2CppSequenceAssemblyDefinition">
+			<HintPath>..\..\gogh Focus with Your Avatar\MelonLoader\Il2CppAssemblies\Il2CppSequenceAssemblyDefinition.dll</HintPath>
+			<Private>false</Private>
+		</Reference>
+		<Reference Include="Il2CppBehaviourAssemblyDefinition">
+			<HintPath>..\..\gogh Focus with Your Avatar\MelonLoader\Il2CppAssemblies\Il2CppBehaviourAssemblyDefinition.dll</HintPath>
+			<Private>false</Private>
+		</Reference>
+		<Reference Include="Il2CppUniTask">
+			<HintPath>..\..\gogh Focus with Your Avatar\MelonLoader\Il2CppAssemblies\Il2CppUniTask.dll</HintPath>
+			<Private>false</Private>
+		</Reference>
+	</ItemGroup>
+</Project>
