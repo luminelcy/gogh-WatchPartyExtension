@@ -26,6 +26,10 @@ internal static class BiliFallback
 
     private static float _nextTick;
     private static string _injectedUrl;
+    private static bool _loggedScan;
+    private static bool _loggedController;
+    private static bool _loggedWebView;
+    private static bool _loggedNoWebView;
 
     // il2cpp 代理对象字典键用 Pointer（类名扫描结果缓存）
     private static IntPtr _controllerPtr;
@@ -38,8 +42,22 @@ internal static class BiliFallback
 
         try
         {
+            if (!_loggedScan)
+            {
+                _loggedScan = true;
+                MelonLogger.Msg("BiliFallback: tick alive");
+            }
             var webView = GetWebView();
-            if (webView == null) return;
+            if (webView == null)
+            {
+                if (!_loggedNoWebView)
+                {
+                    _loggedNoWebView = true;
+                    MelonLogger.Msg("BiliFallback: webview not found yet (will retry)");
+                }
+                return;
+            }
+            _loggedNoWebView = false;
 
             string url = webView.Url;
             if (string.IsNullOrEmpty(url)) return;
@@ -58,9 +76,7 @@ internal static class BiliFallback
         }
         catch (Exception e)
         {
-            // WebViewController/WebView 尚未初始化等情况会走到这里，下一拍重试
-            if (e is NullReferenceException or InvalidOperationException) return;
-            MelonLogger.Warning("BiliFallback tick failed: " + e.Message);
+            MelonLogger.Warning($"BiliFallback tick failed: {e.GetType().Name}: {e.Message}");
         }
     }
 
@@ -68,28 +84,51 @@ internal static class BiliFallback
     {
         if (_controller != null && !_controller.WasCollected)
         {
-            var wv = _controller.webViewPrefab?.WebView;
-            if (wv != null) return wv;
-            return null;
+            var prefab = _controller.webViewPrefab;
+            return prefab == null ? null : prefab.WebView;
         }
 
+        // 快路径：按 GameObject 名直取（Bridge 实证对象名为 P_WebViewControllerObject）
+        var go = GameObject.Find("P_WebViewControllerObject");
+        if (go != null)
+        {
+            var comp = go.GetComponent("WebViewController");
+            var controller = comp == null ? null : comp.TryCast<WebViewControllerType>();
+            if (controller != null) return Cache(controller);
+        }
+
+        // 兜底：按 il2cpp 类名扫描全部 MonoBehaviour
         foreach (var mb in Resources.FindObjectsOfTypeAll<MonoBehaviour>())
         {
-            if (mb == null) continue;
-            var ptr = mb.Pointer;
-            if (ptr == IntPtr.Zero) continue;
-            var cls = IL2CPP.il2cpp_object_get_class(ptr);
+            if (mb == null || mb.Pointer == IntPtr.Zero) continue;
+            var cls = IL2CPP.il2cpp_object_get_class(mb.Pointer);
             if (cls == IntPtr.Zero) continue;
             var name = Marshal.PtrToStringAnsi(IL2CPP.il2cpp_class_get_name(cls));
             if (name != "WebViewController") continue;
-
             var controller = mb.TryCast<WebViewControllerType>();
             if (controller == null) continue;
-            _controller = controller;
-            _controllerPtr = ptr;
-            return controller.webViewPrefab?.WebView;
+            return Cache(controller);
         }
         return null;
+    }
+
+    private static Il2CppVuplex.WebView.IWebView Cache(WebViewControllerType controller)
+    {
+        _controller = controller;
+        _controllerPtr = controller.Pointer;
+        if (!_loggedController)
+        {
+            _loggedController = true;
+            MelonLogger.Msg("BiliFallback: controller found");
+        }
+        var prefab = controller.webViewPrefab;
+        var webView = prefab == null ? null : prefab.WebView;
+        if (webView != null && !_loggedWebView)
+        {
+            _loggedWebView = true;
+            MelonLogger.Msg("BiliFallback: webview ready");
+        }
+        return webView;
     }
 
     // 语言：JS。自建迷你播放器（原生 <video controls>），av01 优先。

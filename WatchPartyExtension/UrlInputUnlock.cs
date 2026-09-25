@@ -229,14 +229,15 @@ internal static class UrlInputUnlock
     /// <summary>
     /// 按类型名找 il2cpp 代理类型（Il2CppInterop 对 Project.* 加 Il2Cpp 前缀，这里两种都试）；
     /// 方法名支持子串匹配（编译器生成的 lambda 名形如 &lt;StartLifeCycle&gt;b__19_0）。
+    /// 纯反射实现，避免 AccessTools.Method 查不到时刷 WARNING。
     /// </summary>
     private static MethodBase FindMethod(string typeName, string methodKey)
     {
         var type = AccessTools.TypeByName(typeName)
                    ?? AccessTools.TypeByName(typeName.StartsWith("Il2Cpp") ? typeName.Substring(6) : "Il2Cpp" + typeName);
         if (type == null) return null;
-        return AccessTools.Method(type, methodKey)
-               ?? type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static)
-                   .FirstOrDefault(m => m.Name.Contains(methodKey));
+        const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static;
+        return (MethodBase)type.GetMethod(methodKey, flags)
+               ?? type.GetMethods(flags).FirstOrDefault(m => m.Name.Contains(methodKey));
     }
 }
