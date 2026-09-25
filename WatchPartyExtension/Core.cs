@@ -19,4 +19,9 @@ public class Core : MelonMod
             MelonLogger.Error("WatchPartyExtension 初始化失败: " + e);
         }
     }
+
+    public override void OnUpdate()
+    {
+        BiliFallback.Tick();
+    }
 }

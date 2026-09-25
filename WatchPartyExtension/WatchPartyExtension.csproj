@@ -20,6 +20,7 @@
 	<ItemGroup>
 		<Compile Include="Core.cs" />
 		<Compile Include="UrlInputUnlock.cs" />
+		<Compile Include="BiliFallback.cs" />
 	</ItemGroup>
 
 	<ItemGroup>
@@ -41,6 +42,18 @@
 		</Reference>
 		<Reference Include="Il2Cppmscorlib">
 			<HintPath>..\..\gogh Focus with Your Avatar\MelonLoader\Il2CppAssemblies\Il2Cppmscorlib.dll</HintPath>
+			<Private>false</Private>
+		</Reference>
+		<Reference Include="UnityEngine">
+			<HintPath>..\..\gogh Focus with Your Avatar\MelonLoader\Il2CppAssemblies\UnityEngine.dll</HintPath>
+			<Private>false</Private>
+		</Reference>
+		<Reference Include="UnityEngine.CoreModule">
+			<HintPath>..\..\gogh Focus with Your Avatar\MelonLoader\Il2CppAssemblies\UnityEngine.CoreModule.dll</HintPath>
+			<Private>false</Private>
+		</Reference>
+		<Reference Include="Il2CppVuplex.WebView">
+			<HintPath>..\..\gogh Focus with Your Avatar\MelonLoader\Il2CppAssemblies\Il2CppVuplex.WebView.dll</HintPath>
 			<Private>false</Private>
 		</Reference>
 	</ItemGroup>
