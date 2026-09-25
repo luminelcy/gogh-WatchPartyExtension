@@ -107,27 +107,39 @@ internal static class UrlInputUnlock
     }
 
     /// <summary>
-    /// 直读游戏地址栏控件（CommonInputFieldBehaviour.GetText）里非空的 URL 文本。
-    /// 不走 CurrentWatchPartyInputFieldUrl 变量——它偶尔和输入框文本失同步。
+    /// 直读地址栏控件（CommonInputFieldBehaviour.GetText）里非空的 URL 文本。
+    /// 不走 CurrentWatchPartyInputFieldUrl 变量——场景恢复 URL 时只写输入框文本不写该变量，
+    /// 首次点"移动"会读到空。定位用 GameObject 名 + transform 递归（il2cpp 类名扫描在本环境不可靠）。
     /// </summary>
     private static string TryGetUrlBarText()
     {
-        foreach (var mb in UnityEngine.Resources.FindObjectsOfTypeAll<UnityEngine.MonoBehaviour>())
+        foreach (var rootName in new[] { "P_WatchPartyUrlInputFieldObject", "P_WatchPartySetupUrlInputFieldObject" })
         {
-            if (mb == null || mb.Pointer == IntPtr.Zero) continue;
-            var cls = Il2CppInterop.Runtime.IL2CPP.il2cpp_object_get_class(mb.Pointer);
-            if (cls == IntPtr.Zero) continue;
-            var name = System.Runtime.InteropServices.Marshal.PtrToStringAnsi(
-                Il2CppInterop.Runtime.IL2CPP.il2cpp_class_get_name(cls));
-            if (name != "CommonInputFieldBehaviour") continue;
-            var field = mb.TryCast<Il2CppCommon.Prefabs.CommonInputField.CommonInputFieldBehaviour>();
-            if (field == null) continue;
-            string text = field.GetText;
+            var go = UnityEngine.GameObject.Find(rootName);
+            if (go == null) continue;
+            var text = FindUrlText(go.transform);
+            if (text != null) return text;
+        }
+        return null;
+    }
+
+    private static string FindUrlText(UnityEngine.Transform t)
+    {
+        var comp = t.GetComponent("CommonInputFieldBehaviour");
+        if (comp != null)
+        {
+            var field = comp.TryCast<Il2CppCommon.Prefabs.CommonInputField.CommonInputFieldBehaviour>();
+            string text = field == null ? null : field.GetText;
             if (!string.IsNullOrEmpty(text) && text.Contains("://"))
             {
                 MelonLogger.Msg("UrlInputUnlock: fallback to input field text");
                 return text;
             }
+        }
+        for (int i = 0; i < t.childCount; i++)
+        {
+            var found = FindUrlText(t.GetChild(i));
+            if (found != null) return found;
         }
         return null;
     }
