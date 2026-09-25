@@ -87,15 +87,49 @@ internal static class UrlInputUnlock
     /// TryExtractVideoInfo(string inputUrl, out YoutubeVideoInfo videoInfo, out string errorMessage)。
     /// 走私链接时把入参替换成假 YouTube 链接、放行原逻辑：原逻辑产出的 VideoInfo 全程在
     /// il2cpp 侧生成，结构体不跨托管边界；真实 URL 记在 _pendingRealUrl 里。
+    /// 入参为空/非法时兜底直读地址栏控件文本（曾出现变量与输入框失同步、点击读到空值的情况）。
     /// </summary>
     public static bool TryExtractPrefix(ref string inputUrl)
     {
-        if (!_unlocked || IsYoutubeUrl(inputUrl)) return true;
+        if (!_unlocked) return true;
+        if (string.IsNullOrEmpty(inputUrl) || !IsYoutubeUrl(inputUrl) && !TryNormalizeHttpUrl(inputUrl, out _))
+        {
+            var alt = TryGetUrlBarText();
+            if (alt == null) return true;
+            inputUrl = alt;
+        }
+        if (IsYoutubeUrl(inputUrl)) return true;
         if (!TryNormalizeHttpUrl(inputUrl, out var url)) return true; // 连 URL 都不是，交给原逻辑报错
         _pendingRealUrl = url;
         _blessedUrls.Add(url);
         inputUrl = FakeYoutubeUrl;
         return true;
+    }
+
+    /// <summary>
+    /// 直读游戏地址栏控件（CommonInputFieldBehaviour.GetText）里非空的 URL 文本。
+    /// 不走 CurrentWatchPartyInputFieldUrl 变量——它偶尔和输入框文本失同步。
+    /// </summary>
+    private static string TryGetUrlBarText()
+    {
+        foreach (var mb in UnityEngine.Resources.FindObjectsOfTypeAll<UnityEngine.MonoBehaviour>())
+        {
+            if (mb == null || mb.Pointer == IntPtr.Zero) continue;
+            var cls = Il2CppInterop.Runtime.IL2CPP.il2cpp_object_get_class(mb.Pointer);
+            if (cls == IntPtr.Zero) continue;
+            var name = System.Runtime.InteropServices.Marshal.PtrToStringAnsi(
+                Il2CppInterop.Runtime.IL2CPP.il2cpp_class_get_name(cls));
+            if (name != "CommonInputFieldBehaviour") continue;
+            var field = mb.TryCast<Il2CppCommon.Prefabs.CommonInputField.CommonInputFieldBehaviour>();
+            if (field == null) continue;
+            string text = field.GetText;
+            if (!string.IsNullOrEmpty(text) && text.Contains("://"))
+            {
+                MelonLogger.Msg("UrlInputUnlock: fallback to input field text");
+                return text;
+            }
+        }
+        return null;
     }
 
     /// <summary>
