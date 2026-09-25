@@ -3,7 +3,6 @@ using System.Linq;
 using System.Reflection;
 using System.Text.RegularExpressions;
 using HarmonyLib;
-using Il2CppProject.HomeScene.YouTubeWebScene;
 using MelonLoader;
 
 namespace WatchPartyExtension;
@@ -16,20 +15,28 @@ namespace WatchPartyExtension;
 /// 本补丁只在"输入框提交"的调用栈内（守卫开关）放行非 YouTube 的 http(s) URL，
 /// 其余调用方（开始共享 / 加入 / 重新同步 / 消息接收）保持 vanilla 校验不变。
 ///
-/// 全程不从托管侧调用任何游戏方法——放行后由 vanilla 原生流程自己完成
-/// BuildCanonicalUrl → OpenWebViewRequest 推送，避免 il2cpp 反射传字符串的静默失效坑。
+/// 关键约束（踩坑后立下的规矩）：**补丁里绝不触碰 YoutubeVideoInfo 等含 string 字段的
+/// il2cpp 结构体**——它们经 Harmony 跨界时按 IntPtr 隐藏引用传递，托管侧读字段
+/// （get_VideoId → Il2CppStringToManaged）会拿到垃圾指针直接抛异常。
+/// 因此走私走"假 YouTube 链接旁路"：TryExtractPrefix 只改写字符串入参，让原逻辑
+/// 自己产出结构体合法的 YoutubeVideoInfo；BuildCanonicalPrefix 不收结构体参数，
+/// 靠自己记下的真实 URL 字符串返回。全程只有 string 跨界。
 /// </summary>
 internal static class UrlInputUnlock
 {
     private const string HarmonyId = "gogh.WatchPartyExtension";
 
-    // 注意：游戏程序集里有同名 Harmony 命名空间会遮蔽 HarmonyLib.Harmony 类型，必须全限定
+    /// <summary>游戏自带示例链接（WebView_HowTo_UrlGuide_ExsampleUrl），原 TryExtract 必然接受。</summary>
+    private const string FakeYoutubeUrl = "https://www.youtube.com/watch?v=cxsXkFRQZHA";
+
     private static HarmonyLib.Harmony _harmony;
     private static bool _unlocked;
     private static bool _unlockedPrev;
+    private static string _pendingRealUrl;
 
     public static void Apply()
     {
+        // 注意：游戏程序集里有同名 Harmony 命名空间会遮蔽 HarmonyLib.Harmony 类型，必须全限定
         _harmony = new HarmonyLib.Harmony(HarmonyId);
 
         int ok = 0;
@@ -63,32 +70,39 @@ internal static class UrlInputUnlock
     private static Exception GuardExit(Exception __exception)
     {
         _unlocked = _unlockedPrev;
+        _pendingRealUrl = null;
         return __exception;
     }
 
-    // ---------- checker 放行 ----------
+    // ---------- checker 放行（只碰字符串，不碰结构体） ----------
 
-    /// <summary>TryExtractVideoInfo(string inputUrl, out YoutubeVideoInfo videoInfo, out string errorMessage)</summary>
-    public static bool TryExtractPrefix(string inputUrl, out YoutubeVideoInfo videoInfo, out string errorMessage, ref bool __result)
+    /// <summary>
+    /// TryExtractVideoInfo(string inputUrl, out YoutubeVideoInfo videoInfo, out string errorMessage)。
+    /// 走私链接时把入参替换成假 YouTube 链接、放行原逻辑：原逻辑产出的 VideoInfo 全程在
+    /// il2cpp 侧生成，结构体不跨托管边界；真实 URL 记在 _pendingRealUrl 里。
+    /// </summary>
+    public static bool TryExtractPrefix(ref string inputUrl)
     {
-        videoInfo = default;
-        errorMessage = null;
         if (!_unlocked || IsYoutubeUrl(inputUrl)) return true;
         if (!TryNormalizeHttpUrl(inputUrl, out var url)) return true; // 连 URL 都不是，交给原逻辑报错
-        videoInfo = new YoutubeVideoInfo(url, YoutubeVideoType.Video);
-        __result = true;
-        return false;
+        _pendingRealUrl = url;
+        inputUrl = FakeYoutubeUrl;
+        return true;
     }
 
-    /// <summary>BuildCanonicalUrl(YoutubeVideoInfo videoInfo, int startAtSeconds = 0) —— 原实现是 youtube 模板，对走私 URL 原样返回。</summary>
-    public static bool BuildCanonicalPrefix(YoutubeVideoInfo videoInfo, int startAtSeconds, ref string __result)
+    /// <summary>
+    /// BuildCanonicalUrl(YoutubeVideoInfo videoInfo, int startAtSeconds = 0)。
+    /// 不声明 videoInfo 参数（避免结构体跨界），有走私 URL 就原样返回（可带 t= 起播偏移），
+    /// 否则交给原逻辑（此时必是合法 YouTube VideoInfo）。
+    /// </summary>
+    public static bool BuildCanonicalPrefix(int startAtSeconds, ref string __result)
     {
-        if (!_unlocked) return true;
-        var id = videoInfo.VideoId;
-        if (string.IsNullOrEmpty(id) || !id.Contains("://")) return true;
+        if (!_unlocked || _pendingRealUrl == null) return true;
+        var url = _pendingRealUrl;
+        _pendingRealUrl = null;
         __result = startAtSeconds > 0
-            ? id + (id.Contains("?") ? "&" : "?") + "t=" + startAtSeconds
-            : id;
+            ? url + (url.Contains("?") ? "&" : "?") + "t=" + startAtSeconds
+            : url;
         return false;
     }
 
