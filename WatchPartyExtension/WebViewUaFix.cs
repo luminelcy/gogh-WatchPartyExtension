@@ -102,30 +102,33 @@ internal static class WebViewUaFix
         return p == null ? null : p.WebView;
     }
 
-    // 前置 shim：UA 覆写 + avc1/mp4a 检测放行（真实解码交给内核）
+    // 前置 shim：UA 覆写 + avc1/mp4a 检测放行（真实解码交给内核）。
+    // 原函数存到 window.__wpeReal 供诊断面板报告【真实】矩阵（shim 会谎报，别信谎报值）。
     private const string ShimJs = """
 (function () {
   try {
     var UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.7151.104 Safari/537.36';
     try { Object.defineProperty(navigator, 'userAgent', { get: function () { return UA; } }); } catch (e) {}
     try { Object.defineProperty(navigator, 'appVersion', { get: function () { return UA.replace('Mozilla/', ''); } }); } catch (e) {}
+    var real = {};
     try {
-      var realCpt = HTMLMediaElement.prototype.canPlayType;
+      real.cpt = HTMLMediaElement.prototype.canPlayType;
       HTMLMediaElement.prototype.canPlayType = function (t) {
-        var r = realCpt.call(this, t);
+        var r = real.cpt.call(this, t);
         if (!r && t && /avc1|mp4a|h264|aac/i.test(t)) return 'probably';
         return r;
       };
     } catch (e) {}
     try {
       if (window.MediaSource) {
-        var realSup = MediaSource.isTypeSupported.bind(MediaSource);
+        real.sup = MediaSource.isTypeSupported.bind(MediaSource);
         MediaSource.isTypeSupported = function (t) {
           if (t && /avc1|mp4a|h264|aac/i.test(t)) return true;
-          return realSup(t);
+          return real.sup(t);
         };
       }
     } catch (e) {}
+    window.__wpeReal = real;
     window.__wpeShim = 'applied';
   } catch (e) {
     window.__wpeShim = 'err:' + e;
@@ -133,7 +136,7 @@ internal static class WebViewUaFix
 })();
 """;
 
-    // 诊断面板：shim 状态 / UA / 检测矩阵，直接画在页面上（截图可见）
+    // 诊断面板：shim 状态 / UA / 【真实】矩阵（经 __wpeReal），直接画在页面上（截图可见）
     private const string OverlayJs = """
 (function () {
   try {
@@ -145,18 +148,18 @@ internal static class WebViewUaFix
     (document.body || document.documentElement).appendChild(d);
     var upd = function () {
       try {
-        var p = function (c) {
-          try { return (window.MediaSource && window.MediaSource.isTypeSupported(c)) ? 1 : 0; }
-          catch (e) { return -1; }
+        var real = window.__wpeReal || {};
+        var rs = function (c) {
+          try { return real.sup ? (real.sup(c) ? 1 : 0) : '?'; } catch (e) { return -1; }
         };
         var v = document.createElement('video');
         d.textContent = '[WPE] shim=' + (window.__wpeShim || 'none')
           + ' | ua=' + (navigator.userAgent.indexOf('Chrome/') >= 0 ? 'CHROME-OK' : 'BAD')
-          + ' | canplay(h264aac)=' + (v.canPlayType('video/mp4; codecs="avc1.42E01E, mp4a.40.2"') || 'no')
-          + ' | avc1=' + p('video/mp4; codecs="avc1.42E01E"')
-          + ' mp4a=' + p('audio/mp4; codecs="mp4a.40.2"')
-          + ' av01=' + p('video/mp4; codecs="av01.0.08M.08"')
-          + ' | ' + new Date().toLocaleTimeString();
+          + '\nREAL: avc1=' + rs('video/mp4; codecs="avc1.42E01E"')
+          + ' mp4a=' + rs('audio/mp4; codecs="mp4a.40.2"')
+          + ' av01=' + rs('video/mp4; codecs="av01.0.08M.08"')
+          + ' canplay_h264aac=' + (real.cpt ? (real.cpt.call(v, 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"') || 'no') : '?')
+          + '\n' + new Date().toLocaleTimeString();
       } catch (e) {
         d.textContent = '[WPE] panel err:' + e;
       }
