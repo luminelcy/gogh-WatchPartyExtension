@@ -88,28 +88,38 @@ internal static class UrlInputUnlock
     /// 走私链接时把入参替换成假 YouTube 链接、放行原逻辑：原逻辑产出的 VideoInfo 全程在
     /// il2cpp 侧生成，结构体不跨托管边界；真实 URL 记在 _pendingRealUrl 里。
     /// 入参为空/非法时兜底直读地址栏控件文本（曾出现变量与输入框失同步、点击读到空值的情况）。
+    /// 任何异常都不得漏进游戏调用栈。
     /// </summary>
     public static bool TryExtractPrefix(ref string inputUrl)
     {
-        if (!_unlocked) return true;
-        if (string.IsNullOrEmpty(inputUrl) || !IsYoutubeUrl(inputUrl) && !TryNormalizeHttpUrl(inputUrl, out _))
+        try
         {
-            var alt = TryGetUrlBarText();
-            if (alt == null) return true;
-            inputUrl = alt;
+            if (!_unlocked) return true;
+            if (string.IsNullOrEmpty(inputUrl) || !IsYoutubeUrl(inputUrl) && !TryNormalizeHttpUrl(inputUrl, out _))
+            {
+                var alt = TryGetUrlBarText();
+                if (alt == null) return true;
+                inputUrl = alt;
+            }
+            if (IsYoutubeUrl(inputUrl)) return true;
+            if (!TryNormalizeHttpUrl(inputUrl, out var url)) return true; // 连 URL 都不是，交给原逻辑报错
+            _pendingRealUrl = url;
+            _blessedUrls.Add(url);
+            inputUrl = FakeYoutubeUrl;
+            return true;
         }
-        if (IsYoutubeUrl(inputUrl)) return true;
-        if (!TryNormalizeHttpUrl(inputUrl, out var url)) return true; // 连 URL 都不是，交给原逻辑报错
-        _pendingRealUrl = url;
-        _blessedUrls.Add(url);
-        inputUrl = FakeYoutubeUrl;
-        return true;
+        catch (Exception e)
+        {
+            MelonLogger.Warning("UrlInputUnlock: TryExtractPrefix error: " + e.Message);
+            return true;
+        }
     }
 
     /// <summary>
     /// 直读地址栏控件（CommonInputFieldBehaviour.GetText）里非空的 URL 文本。
     /// 不走 CurrentWatchPartyInputFieldUrl 变量——场景恢复 URL 时只写输入框文本不写该变量，
-    /// 首次点"移动"会读到空。定位用 GameObject 名 + transform 递归（il2cpp 类名扫描在本环境不可靠）。
+    /// 首次点"移动"会读到空。定位用 GameObject 名 + transform 递归 + GetComponent(Type)：
+    /// GetComponent(String) 在本运行时会抛 MissingMethodException（ReadOnlySpan AOT 缺失），禁用。
     /// </summary>
     private static string TryGetUrlBarText()
     {
@@ -125,7 +135,9 @@ internal static class UrlInputUnlock
 
     private static string FindUrlText(UnityEngine.Transform t)
     {
-        var comp = t.GetComponent("CommonInputFieldBehaviour");
+        // 注意：必须走 GameObject.GetComponent(String)——Component.GetComponent(String)
+        // （Transform.GetComponent 走的）在本运行时会抛 MissingMethodException（ReadOnlySpan AOT 缺失）
+        var comp = t.gameObject.GetComponent("CommonInputFieldBehaviour");
         if (comp != null)
         {
             var field = comp.TryCast<Il2CppCommon.Prefabs.CommonInputField.CommonInputFieldBehaviour>();

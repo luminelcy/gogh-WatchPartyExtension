@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using Il2CppInterop.Runtime;
 using MelonLoader;
@@ -13,27 +12,40 @@ namespace WatchPartyExtension;
 ///
 /// 背景：游戏内嵌浏览器（Vuplex WebView.vuplex + libcef.dll，CEF/Chromium 137）只带开源解码器
 /// （AV1/VP9/Opus ✓，H.264/AAC ✗），B 站播放器检测 avc1 失败会显示"不支持 HTML5 播放器"。
-/// 而 B 站视频页自带 window.__playinfo__（服务端注入的 DASH 流清单，含 AV1 轨），
-/// 这个内核恰好能解 AV1 —— 于是注入一段 JS 读 __playinfo__、自建 video+MSE 播 av01 流，
-/// 盖掉原播放器。音频轨是 AAC：运行时检测 isTypeSupported，支持则一并播，否则静音并提示。
+/// B 站视频页自带 window.__playinfo__（DASH 流清单，含 AV1 轨），于是注入 JS 自建
+/// video+MSE 播放器。JS 侧把过程/结果写进 window.__wpeStatus，C# 轮询读回游戏日志（排障生命线）。
 ///
-/// 触发：OnUpdate 节流轮询 WebView 当前 URL，进入 B 站视频页且未注入过时注入一次；
-/// SPA 换 P（URL 变化）时对新 URL 重新注入。
+/// 运行时注意：GetComponent(String) 会抛 MissingMethodException（Il2Cpp ReadOnlySpan AOT 缺失），
+/// 定位一律用 GameObject.Find + GetComponent(Il2CppTypeOf&lt;T&gt;())。
 /// </summary>
 internal static class BiliFallback
 {
     private const float TickIntervalSeconds = 1f;
+    private const float StatusPollIntervalSeconds = 2f;
 
     private static float _nextTick;
+    private static float _nextStatusPoll;
     private static string _injectedUrl;
+    private static string _lastStatus;
     private static bool _loggedScan;
     private static bool _loggedController;
     private static bool _loggedWebView;
     private static bool _loggedNoWebView;
 
-    // il2cpp 代理对象字典键用 Pointer（类名扫描结果缓存）
-    private static IntPtr _controllerPtr;
     private static WebViewControllerType _controller;
+    private static Il2CppSystem.Action<string> _injectCb;
+    private static Il2CppSystem.Action<string> _pollCb;
+
+    private static void JsLog(string s)
+    {
+        if (!string.IsNullOrEmpty(s)) MelonLogger.Msg("BiliFallback: " + s);
+    }
+
+    private static Il2CppSystem.Action<string> InjectCb =>
+        _injectCb ??= Il2CppInterop.Runtime.DelegateSupport.ConvertDelegate<Il2CppSystem.Action<string>>(new Action<string>(JsLog));
+
+    private static Il2CppSystem.Action<string> PollCb =>
+        _pollCb ??= Il2CppInterop.Runtime.DelegateSupport.ConvertDelegate<Il2CppSystem.Action<string>>(new Action<string>(OnStatusPolled));
 
     public static void Tick()
     {
@@ -63,21 +75,50 @@ internal static class BiliFallback
             if (string.IsNullOrEmpty(url)) return;
 
             bool isBiliVideo = url.Contains("bilibili.com/video/") || url.Contains("bilibili.com/bangumi/play/");
-            if (!isBiliVideo)
+
+            if (url != _injectedUrl)
             {
-                _injectedUrl = null;
+                if (!isBiliVideo)
+                {
+                    _injectedUrl = null;
+                    _lastStatus = null;
+                    return;
+                }
+                webView.ExecuteJavaScript(BiliPlayerJs, InjectCb);
+                _injectedUrl = url;
+                _lastStatus = null;
+                _nextStatusPoll = Time.realtimeSinceStartup + StatusPollIntervalSeconds;
+                MelonLogger.Msg($"BiliFallback: injected at {url}");
                 return;
             }
-            if (url == _injectedUrl) return;
 
-            webView.ExecuteJavaScript(BiliPlayerJs, null);
-            _injectedUrl = url;
-            MelonLogger.Msg($"BiliFallback: injected at {url}");
+            // 同一 URL：轮询 JS 侧状态（页面被重载后 window.__wpeStatus 变空 → 重新注入）
+            if (isBiliVideo && Time.realtimeSinceStartup >= _nextStatusPoll)
+            {
+                _nextStatusPoll = Time.realtimeSinceStartup + StatusPollIntervalSeconds;
+                webView.ExecuteJavaScript("window.__wpeStatus || ''", PollCb);
+            }
         }
         catch (Exception e)
         {
             MelonLogger.Warning($"BiliFallback tick failed: {e.GetType().Name}: {e.Message}");
         }
+    }
+
+    private static void OnStatusPolled(string status)
+    {
+        status = (status ?? string.Empty).Trim().Trim('"');
+        if (status == _lastStatus) return;
+        if (string.IsNullOrEmpty(status))
+        {
+            // 页面重载（window 重建）→ 允许重新注入
+            if (_lastStatus != null) MelonLogger.Msg("BiliFallback: page reloaded, will re-inject");
+            _injectedUrl = null;
+            _lastStatus = null;
+            return;
+        }
+        _lastStatus = status;
+        MelonLogger.Msg("BiliFallback: status " + status);
     }
 
     private static Il2CppVuplex.WebView.IWebView GetWebView()
@@ -92,6 +133,7 @@ internal static class BiliFallback
         var go = GameObject.Find("P_WebViewControllerObject");
         if (go != null)
         {
+            // GameObject.GetComponent(String) 可用；Component/Transform.GetComponent(String) 会抛异常
             var comp = go.GetComponent("WebViewController");
             var controller = comp == null ? null : comp.TryCast<WebViewControllerType>();
             if (controller != null) return Cache(controller);
@@ -115,7 +157,6 @@ internal static class BiliFallback
     private static Il2CppVuplex.WebView.IWebView Cache(WebViewControllerType controller)
     {
         _controller = controller;
-        _controllerPtr = controller.Pointer;
         if (!_loggedController)
         {
             _loggedController = true;
@@ -131,104 +172,124 @@ internal static class BiliFallback
         return webView;
     }
 
-    // 语言：JS。自建迷你播放器（原生 <video controls>），av01 优先。
+    // 语言：JS。自建迷你播放器（原生 <video controls>），av01 优先；
+    // 过程/结果写 window.__wpeStatus（C# 轮询读回），返回值为注入时的同步状态。
     private const string BiliPlayerJs = """
 (function () {
-  var log = function (m) { try { console.log('[WPE] ' + m); } catch (e) {} };
-  if (window.__wpeUrl === location.href) return;
-  window.__wpeUrl = location.href;
-
-  var tryBuild = function (attempt) {
-    var pi = window.__playinfo__;
-    if (!pi || !pi.data || !pi.data.dash) {
-      if (attempt < 20) { setTimeout(function () { tryBuild(attempt + 1); }, 500); }
-      else { log('no __playinfo__ dash'); }
-      return;
-    }
-    var dash = pi.data.dash;
-    var vids = (dash.video || []).slice();
-    var auds = (dash.audio || []).slice();
-    if (!vids.length) { log('no video tracks'); return; }
-
-    // 视频轨：av01 优先，同优先级内取高码率
-    vids.sort(function (a, b) {
-      var pa = (a.codecs || '').indexOf('av01') === 0 ? 1 : 0;
-      var pb = (b.codecs || '').indexOf('av01') === 0 ? 1 : 0;
-      if (pa !== pb) return pb - pa;
-      return (b.bandwidth || 0) - (a.bandwidth || 0);
-    });
-    var v = vids[0];
-    auds.sort(function (a, b) { return (b.bandwidth || 0) - (a.bandwidth || 0); });
-    var a = auds[0];
-
-    var ms = window.MediaSource;
-    var videoOk = ms && ms.isTypeSupported('video/mp4; codecs="' + v.codecs + '"');
-    var audioOk = a && ms && ms.isTypeSupported('audio/mp4; codecs="' + a.codecs + '"');
-    log('video ' + v.codecs + ' ok=' + videoOk + ', audio ' + (a ? a.codecs : 'none') + ' ok=' + audioOk);
-    if (!videoOk) { log('video codec unsupported'); return; }
-
-    var box = document.querySelector('#bofqi')
-           || document.querySelector('.bpx-player-container')
-           || document.querySelector('#bilibili-player')
-           || document.querySelector('.player-wrap');
-    if (!box) {
-      if (attempt < 20) { setTimeout(function () { tryBuild(attempt + 1); }, 500); }
-      else { log('player box not found'); }
-      return;
-    }
-
-    var wrap = document.createElement('div');
-    wrap.style.cssText = 'position:relative;width:100%;height:100%;background:#000;';
-    var video = document.createElement('video');
-    video.controls = true;
-    video.autoplay = true;
-    video.style.cssText = 'width:100%;height:100%;display:block;';
-    wrap.appendChild(video);
-    if (!audioOk) {
-      var n = document.createElement('div');
-      n.textContent = '⚠ 此浏览器内核不支持 AAC 音频，当前无声播放';
-      n.style.cssText = 'position:absolute;top:8px;left:8px;color:#fff;background:rgba(0,0,0,.55);padding:4px 10px;border-radius:4px;font-size:12px;z-index:10;';
-      wrap.appendChild(n);
-    }
-    box.innerHTML = '';
-    box.appendChild(wrap);
-
-    var msource = new MediaSource();
-    video.src = URL.createObjectURL(msource);
-
-    var loadTrack = function (track, kind, sb) {
-      // CDN 链接可能是 http://，https 页面下要升级（upos 支持 https）
-      var u = (track.base_url || '').replace(/^http:/, 'https:');
-      fetch(u).then(function (r) {
-        if (!r.ok) throw new Error(kind + ' http ' + r.status);
-        return r.arrayBuffer();
-      }).then(function (buf) {
-        sb.appendBuffer(buf);
-        log(kind + ' appended ' + buf.byteLength + ' bytes');
-      }).catch(function (e) {
-        log(kind + ' fetch/append failed: ' + e);
-        if (kind === 'audio') {
-          var n = wrap.querySelector('div');
-          if (n) n.textContent = '⚠ 音频拉取失败，当前无声播放';
-        }
-      });
-    };
-
-    msource.addEventListener('sourceopen', function () {
-      try {
-        var vsb = msource.addSourceBuffer('video/mp4; codecs="' + v.codecs + '"');
-        loadTrack(v, 'video', vsb);
-        if (audioOk && a) {
-          var asb = msource.addSourceBuffer('audio/mp4; codecs="' + a.codecs + '"');
-          loadTrack(a, 'audio', asb);
-        }
-      } catch (e) {
-        log('mse error: ' + e);
-      }
-    });
+  var probe = function (c) {
+    try { return (window.MediaSource && window.MediaSource.isTypeSupported(c)) ? 1 : 0; }
+    catch (e) { return -1; }
+  };
+  var caps = function () {
+    return 'mse=' + (window.MediaSource ? 1 : 0)
+      + ' avc1=' + probe('video/mp4; codecs="avc1.42E01E"')
+      + ' av01=' + probe('video/mp4; codecs="av01.0.08M.08"')
+      + ' vp09=' + probe('video/mp4; codecs="vp09.00.10.08"')
+      + ' mp4a=' + probe('audio/mp4; codecs="mp4a.40.2"');
   };
 
-  tryBuild(0);
-})();
+  var build = function () {
+    try {
+      var C = caps();
+      if (document.getElementById('wpe-player')) { window.__wpeStatus = 'ok:already ' + C; return; }
+      var pi = window.__playinfo__;
+      if (!pi || !pi.data || !pi.data.dash) {
+        window.__wpeTry = (window.__wpeTry || 0) + 1;
+        if (window.__wpeTry < 20) {
+          window.__wpeStatus = 'wait:noplayinfo#' + window.__wpeTry + ' ' + C;
+          setTimeout(build, 500);
+        } else {
+          window.__wpeStatus = 'fail:noplayinfo ' + C;
+        }
+        return;
+      }
+      var dash = pi.data.dash;
+      var vids = (dash.video || []).slice();
+      var auds = (dash.audio || []).slice();
+      if (!vids.length) { window.__wpeStatus = 'fail:notracks ' + C; return; }
+
+      var sup = function (c) { return probe('video/mp4; codecs="' + c + '"') === 1; };
+      vids.sort(function (a, b) {
+        var pa = sup(a.codecs) ? (a.codecs.indexOf('av01') === 0 ? 2 : 1) : 0;
+        var pb = sup(b.codecs) ? (b.codecs.indexOf('av01') === 0 ? 2 : 1) : 0;
+        if (pa !== pb) return pb - pa;
+        return (b.bandwidth || 0) - (a.bandwidth || 0);
+      });
+      var v = vids[0];
+      if (!sup(v.codecs)) {
+        window.__wpeStatus = 'fail:novideocodec ' + C + ' tracks='
+          + vids.map(function (t) { return t.codecs; }).join(',');
+        return;
+      }
+      auds.sort(function (a, b) { return (b.bandwidth || 0) - (a.bandwidth || 0); });
+      var a = auds[0];
+      var aok = a && probe('audio/mp4; codecs="' + a.codecs + '"') === 1;
+
+      var box = document.querySelector('.bpx-player-container')
+             || document.querySelector('#bofqi')
+             || document.querySelector('#bilibili-player')
+             || document.querySelector('.player-wrap');
+      if (!box) { window.__wpeStatus = 'fail:nobox ' + C; return; }
+
+      var wrap = document.createElement('div');
+      wrap.id = 'wpe-player';
+      wrap.style.cssText = 'position:relative;width:100%;height:100%;background:#000;';
+      var video = document.createElement('video');
+      video.controls = true;
+      video.autoplay = true;
+      video.style.cssText = 'width:100%;height:100%;display:block;';
+      wrap.appendChild(video);
+      if (!aok) {
+        var n = document.createElement('div');
+        n.textContent = '⚠ 此浏览器内核不支持 AAC 音频，当前无声播放';
+        n.style.cssText = 'position:absolute;top:8px;left:8px;color:#fff;background:rgba(0,0,0,.55);padding:4px 10px;border-radius:4px;font-size:12px;z-index:10;';
+        wrap.appendChild(n);
+      }
+      box.innerHTML = '';
+      box.appendChild(wrap);
+
+      var ms = new MediaSource();
+      video.src = URL.createObjectURL(ms);
+
+      var load = function (track, kind, sb) {
+        var u = (track.base_url || '').replace(/^http:/, 'https:');
+        fetch(u).then(function (r) {
+          if (!r.ok) throw new Error(kind + ' http ' + r.status);
+          return r.arrayBuffer();
+        }).then(function (buf) {
+          sb.appendBuffer(buf);
+          if (kind === 'video') window.__wpeStatus = 'ok:playing v=' + v.codecs + ' a=' + (aok ? a.codecs : 'muted') + ' ' + C;
+          else window.__wpeStatus = 'ok:playing v=' + v.codecs + ' a=' + a.codecs + ' ' + C;
+        }).catch(function (e) {
+          window.__wpeStatus = 'fail:fetch-' + kind + ' ' + e + ' ' + C;
+          if (kind === 'audio') {
+            var n = wrap.querySelector('div');
+            if (n) n.textContent = '⚠ 音频拉取失败，当前无声播放';
+          }
+        });
+      };
+
+      ms.addEventListener('sourceopen', function () {
+        try {
+          var vsb = ms.addSourceBuffer('video/mp4; codecs="' + v.codecs + '"');
+          load(v, 'video', vsb);
+          if (aok && a) {
+            var asb = ms.addSourceBuffer('audio/mp4; codecs="' + a.codecs + '"');
+            load(a, 'audio', asb);
+          }
+        } catch (e) {
+          window.__wpeStatus = 'fail:mse ' + e + ' ' + C;
+        }
+      });
+
+      window.__wpeStatus = 'ok:mounted v=' + v.codecs + ' a=' + (aok ? a.codecs : 'muted') + ' ' + C;
+    } catch (e) {
+      window.__wpeStatus = 'fail:ex ' + e + ' ' + (typeof C !== 'undefined' ? C : '');
+    }
+  };
+
+  build();
+  return window.__wpeStatus || '';
+})()
 """;
 }
