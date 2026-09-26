@@ -22,9 +22,9 @@ public class Core : MelonMod
 
     public override void OnUpdate()
     {
-        // BiliFallback（AV1 兜底播放器）已弃用（无声且不稳定），代码保留备查。
-        // 现行：WebViewUaFix —— 内核本身是 Spotify CEF codecs 构建（H.264/AAC 齐全），
-        // B 站打不开是 UA 缺 Chrome 标识被 sniffing 拒绝，修复 UA 并回传能力探测。
+        // WebViewUaFix —— 内嵌浏览器 UA 修复（标准 Chrome 137）。
+        // 解码相关代码（能力检测 shim / 诊断面板 / AV1 兜底）已移除：
+        // 2026-09-26 起游戏内核换为自编译 CEF 137.0.17，H.264/AAC 解码齐全。
         WebViewUaFix.Tick();
     }
 }

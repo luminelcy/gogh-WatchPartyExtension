@@ -20,7 +20,6 @@
 	<ItemGroup>
 		<Compile Include="Core.cs" />
 		<Compile Include="UrlInputUnlock.cs" />
-		<Compile Include="BiliFallback.cs" />
 		<Compile Include="WebViewUaFix.cs" />
 	</ItemGroup>
 
